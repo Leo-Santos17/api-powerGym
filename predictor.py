@@ -38,9 +38,16 @@ def executar_predicao_real(file_clientes, file_catraca):
     """
     Executa o pipeline completo de tratamento estrito e predição ML.
     """
-    # 1. Tratamento da Base de Clientes (CSV)
+    # 1. Tratamento da Base de Clientes (CSV) com fallback de encoding
     colunas_clientes = ['Nome', 'Situação do contrato', 'Situação do cliente', 'Data de nascimento', 'Sexo']
-    df_clientes = pd.read_csv(file_clientes, usecols=colunas_clientes)
+    
+    try:
+        # Tenta ler no padrão moderno (UTF-8)
+        df_clientes = pd.read_csv(file_clientes, usecols=colunas_clientes, encoding='utf-8')
+    except UnicodeDecodeError:
+        # Se der erro, volta para o início do arquivo e tenta com a codificação do Excel/Windows BR
+        file_clientes.seek(0) # Reseta o ponteiro de leitura do arquivo enviado pela API
+        df_clientes = pd.read_csv(file_clientes, usecols=colunas_clientes, encoding='iso-8859-1')
     
     # Limpeza estrita de nulos nas colunas fundamentais
     df_clientes = df_clientes.dropna(subset=['Nome', 'Data de nascimento', 'Sexo'])
