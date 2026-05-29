@@ -1,31 +1,35 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from predictor import predict_churn
-import os
 
 app = Flask(__name__)
 CORS(app)
 
 @app.route("/dados", methods=["GET"])
 def get_dados():
-    # Retorna dados iniciais simulados
-    dados = predict_churn(None) # Usa o predictor para gerar dados iniciais
+    # Retorna os dados simulados caso a página precise carregar algo no início
+    dados = predict_churn(None, None) 
     return jsonify(dados)
 
 @app.route("/upload", methods=["POST"])
 def upload_file():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
+    # Valida se os dois arquivos obrigatórios foram enviados no FormData
+    if 'clientes' not in request.files or 'catraca' not in request.files:
+        return jsonify({"error": "É necessário enviar ambos os arquivos: 'clientes' e 'catraca'."}), 400
     
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
+    file_clientes = request.files['clientes']
+    file_catraca = request.files['catraca']
+    
+    if file_clientes.filename == '' or file_catraca.filename == '':
+        return jsonify({"error": "Um ou ambos os arquivos selecionados estão vazios."}), 400
 
-    # Aqui você salvaria o arquivo se necessário
-    # file.save(os.path.join("uploads", file.filename))
-    # Chama a predição e espera a resposta
-    resultado = predict_churn(file)
+    # Passa as duas planilhas para o pipeline realizar o tratamento e predição real
+    resultado = predict_churn(file_clientes, file_catraca)
     
+    # Se o retorno for um dicionário contendo erro, muda o status HTTP
+    if isinstance(resultado, dict) and "error" in resultado:
+        return jsonify(resultado), 400
+        
     return jsonify(resultado)
 
 if __name__ == "__main__":
