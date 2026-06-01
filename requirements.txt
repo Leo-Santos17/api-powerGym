@@ -4,4 +4,5 @@ pandas
 numpy
 scikit-learn
 openpyxl
-tensorflow
+#tensorflow
+ai-edge-litert

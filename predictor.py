@@ -3,28 +3,39 @@ import pickle
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from tensorflow.keras.models import load_model
+
+# Importa o runtime do TFLite de forma flexível (usa o leve ou o cheio, o que estiver instalado)
+import ai_edge_litert.interpreter as tflite
 
 # -------------------------------------------------------------------------
-# INICIALIZAÇÃO: Carrega os modelos globais em memória
+# INICIALIZAÇÃO: Carrega os modelos globais leves em memória
 # -------------------------------------------------------------------------
-MODEL_PATH = 'modelo_churn.h5'
+MODEL_TFLITE_PATH = 'modelo_churn.tflite'
 SCALER_PATH = 'scaler.pkl'
 LABEL_ENCODER_PATH = 'label_encoder.pkl'
 
-model = None
+interpreter = None
+input_details = None
+output_details = None
 scaler = None
 label_encoder = None
 
-if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH) and os.path.exists(LABEL_ENCODER_PATH):
-    model = load_model(MODEL_PATH)
+if os.path.exists(MODEL_TFLITE_PATH) and os.path.exists(SCALER_PATH) and os.path.exists(LABEL_ENCODER_PATH):
+    # Inicializa o Interpretador TF Lite (Consumo mínimo de RAM)
+    interpreter = tflite.Interpreter(model_path=MODEL_TFLITE_PATH)
+    interpreter.allocate_tensors()
+    
+    # MAPEIA AS ENTRADAS E SAÍDAS DO MODELO
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+    
     with open(SCALER_PATH, 'rb') as f:
         scaler = pickle.load(f)
     with open(LABEL_ENCODER_PATH, 'rb') as f:
         label_encoder = pickle.load(f)
-    print("--- MODELOS REAIS CARREGADOS COM SUCESSO ---")
+    print("--- MODELOS LEVES TF-LITE CARREGADOS COM SUCESSO ---")
 else:
-    print("--- AVISO: Arquivos do modelo não encontrados. Rodando modo simulação. ---")
+    print("--- AVISO: Arquivos .tflite ou .pkl não encontrados. Rodando modo simulação. ---")
 
 
 def calcular_idade(nascimento):
@@ -36,32 +47,27 @@ def calcular_idade(nascimento):
 
 def executar_predicao_real(file_clientes, file_catraca):
     """
-    Executa o pipeline completo de tratamento estrito e predição ML.
+    Executa o pipeline completo de tratamento estrito e predição usando TF Lite.
     """
     # 1. Tratamento da Base de Clientes (Híbrido: Excel ou CSV)
     colunas_clientes = ['Nome', 'Situação do contrato', 'Situação do cliente', 'Data de nascimento', 'Sexo']
 
     if hasattr(file_clientes, 'filename') and (file_clientes.filename.endswith('.xlsx') or file_clientes.filename.endswith('.xls')):
-        # Leitura de Excel: Lê completo e higieniza os títulos das colunas
         df_temp = pd.read_excel(file_clientes)
         df_temp.columns = df_temp.columns.astype(str).str.strip()
         df_clientes = df_temp[colunas_clientes]
     else:
-        # Leitura de CSV: Aplica a proteção de encoding, separador (; ou ,) e espaços invisíveis
         try:
             df_temp = pd.read_csv(file_clientes, sep=None, engine='python', encoding='utf-8-sig')
         except UnicodeDecodeError:
             file_clientes.seek(0)
             df_temp = pd.read_csv(file_clientes, sep=None, engine='python', encoding='iso-8859-1')
         
-        # Limpa espaços invisíveis dos títulos (ex: "Sexo " vira "Sexo")
         df_temp.columns = df_temp.columns.astype(str).str.strip()
         
-        # Força o filtro das colunas necessárias após a limpeza
         try:
             df_clientes = df_temp[colunas_clientes]
         except KeyError:
-            # Se o separador automático falhar por completo, tenta forçar por ponto e vírgula (Padrão Excel BR)
             file_clientes.seek(0)
             try:
                 df_temp = pd.read_csv(file_clientes, sep=';', encoding='utf-8-sig')
@@ -83,7 +89,6 @@ def executar_predicao_real(file_clientes, file_catraca):
     # 2. Tratamento da Catraca (Mapeando 'Cliente' para 'Nome')
     colunas_catraca = ['Cliente', 'Contrato', 'Data']
     
-    # Verifica a extensão para ler CSV ou Excel de forma resiliente
     if hasattr(file_catraca, 'filename') and file_catraca.filename.endswith('.csv'):
         try:
             df_catraca = pd.read_csv(file_catraca, sep=None, engine='python', encoding='utf-8-sig')
@@ -99,18 +104,16 @@ def executar_predicao_real(file_clientes, file_catraca):
         
     df_catraca = df_catraca.rename(columns={'Cliente': 'Nome'})
     
-    # Limpeza estrita da Catraca
     df_catraca = df_catraca.dropna(subset=['Nome', 'Data'])
     df_catraca['Nome'] = df_catraca['Nome'].astype(str).str.strip()
     
-    # Remove termos inválidos do sistema
     termos_invalidos = ['CANCELADO', 'diaria 7', 'nan', '']
     df_catraca = df_catraca[~df_catraca['Nome'].isin(termos_invalidos)]
     
     df_catraca['Data'] = pd.to_datetime(df_catraca['Data'], errors='coerce')
     df_catraca = df_catraca.dropna(subset=['Data'])
     
-    # 3. Merge e Agrupamento (Feature Engineering)
+    # 3. Merge e Agrupamento
     base_mista = df_catraca.merge(df_clientes[['Nome', 'Sexo', 'Idade']], on='Nome', how='inner')
     
     if base_mista.empty:
@@ -122,35 +125,42 @@ def executar_predicao_real(file_clientes, file_catraca):
         Sexo=('Sexo', 'first')
     ).reset_index()
     
-    # 4. Label Encoding do Sexo (Evitando falhas com classes novas)
     df_features = df_features[df_features['Sexo'].isin(label_encoder.classes_)]
     df_features['Sexo'] = label_encoder.transform(df_features['Sexo'].astype(str))
     
-    # 5. Predição com o Modelo Keras
+    # 4. Preparação da Matriz e Escalonamento
     X_raw = df_features[['Total_Visitas', 'Idade', 'Sexo']].values
-    X_scaled = scaler.transform(X_raw)
+    X_scaled = scaler.transform(X_raw).astype(np.float32) # TF Lite exige float32 explícito
     
-    predicoes_prob = model.predict(X_scaled).flatten()
     lista_nomes = df_features['Nome'].tolist()
+    resultado = []
     
-    # Formata o retorno exatamente como sua página web espera
-    resultado = [
-        {"nome": nome, "probabilidade": float(prob)}
-        for nome, prob in zip(lista_nomes, predicoes_prob)
-    ]
-    
+    # 5. Inferência com o TF Lite (Processamento por Aluno / Batch)
+    for i, linha_input in enumerate(X_scaled):
+        # Adequa o shape da linha para bater com o esperado [1, num_features]
+        dados_aluno = np.expand_dims(linha_input, axis=0)
+        
+        # Injeta os dados no tensor de input do interpretador
+        interpreter.set_tensor(input_details[0]['index'], dados_aluno)
+        
+        # Executa a inferência
+        interpreter.invoke()
+        
+        # Coleta a probabilidade calculada no tensor de saída
+        probabilidade = interpreter.get_tensor(output_details[0]['index'])[0][0]
+        
+        resultado.append({
+            "nome": lista_nomes[i],
+            "probabilidade": float(probabilidade)
+        })
+        
     return resultado
 
 
 def predict_churn(file_clientes=None, file_catraca=None):
-    """
-    Função principal adaptada para manter compatibilidade com sua rota antiga (GET /dados)
-    e processar dados reais no POST /upload.
-    """
-    # Se não enviar os arquivos (ex: rota GET /dados), mantém um Mock de segurança
-    if file_clientes is None or file_catraca is None or model is None:
+    if file_clientes is None or file_catraca is None or interpreter is None:
         return [
-            {"nome": "Renan Santos (Simulado)", "probabilidade": 0.14},
+            {"nome": "Ana Silva (Simulado)", "probabilidade": 0.8146},
             {"nome": "Claudio Ferreira (Simulado)", "probabilidade": 0.1523},
             {"nome": "Fernando Costa (Simulado)", "probabilidade": 0.9241}
         ]
