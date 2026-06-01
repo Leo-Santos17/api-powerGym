@@ -38,16 +38,38 @@ def executar_predicao_real(file_clientes, file_catraca):
     """
     Executa o pipeline completo de tratamento estrito e predição ML.
     """
-    # 1. Tratamento da Base de Clientes (CSV) com fallback de encoding
+    # 1. Tratamento da Base de Clientes (Híbrido: Excel ou CSV)
     colunas_clientes = ['Nome', 'Situação do contrato', 'Situação do cliente', 'Data de nascimento', 'Sexo']
-    
-    try:
-        # Tenta ler no padrão moderno (UTF-8)
-        df_clientes = pd.read_csv(file_clientes, usecols=colunas_clientes, encoding='utf-8')
-    except UnicodeDecodeError:
-        # Se der erro, volta para o início do arquivo e tenta com a codificação do Excel/Windows BR
-        file_clientes.seek(0) # Reseta o ponteiro de leitura do arquivo enviado pela API
-        df_clientes = pd.read_csv(file_clientes, usecols=colunas_clientes, encoding='iso-8859-1')
+
+    if hasattr(file_clientes, 'filename') and (file_clientes.filename.endswith('.xlsx') or file_clientes.filename.endswith('.xls')):
+        # Leitura de Excel: Lê completo e higieniza os títulos das colunas
+        df_temp = pd.read_excel(file_clientes)
+        df_temp.columns = df_temp.columns.astype(str).str.strip()
+        df_clientes = df_temp[colunas_clientes]
+    else:
+        # Leitura de CSV: Aplica a proteção de encoding, separador (; ou ,) e espaços invisíveis
+        try:
+            df_temp = pd.read_csv(file_clientes, sep=None, engine='python', encoding='utf-8-sig')
+        except UnicodeDecodeError:
+            file_clientes.seek(0)
+            df_temp = pd.read_csv(file_clientes, sep=None, engine='python', encoding='iso-8859-1')
+        
+        # Limpa espaços invisíveis dos títulos (ex: "Sexo " vira "Sexo")
+        df_temp.columns = df_temp.columns.astype(str).str.strip()
+        
+        # Força o filtro das colunas necessárias após a limpeza
+        try:
+            df_clientes = df_temp[colunas_clientes]
+        except KeyError:
+            # Se o separador automático falhar por completo, tenta forçar por ponto e vírgula (Padrão Excel BR)
+            file_clientes.seek(0)
+            try:
+                df_temp = pd.read_csv(file_clientes, sep=';', encoding='utf-8-sig')
+            except UnicodeDecodeError:
+                file_clientes.seek(0)
+                df_temp = pd.read_csv(file_clientes, sep=';', encoding='iso-8859-1')
+            df_temp.columns = df_temp.columns.astype(str).str.strip()
+            df_clientes = df_temp[colunas_clientes]
     
     # Limpeza estrita de nulos nas colunas fundamentais
     df_clientes = df_clientes.dropna(subset=['Nome', 'Data de nascimento', 'Sexo'])
@@ -61,11 +83,19 @@ def executar_predicao_real(file_clientes, file_catraca):
     # 2. Tratamento da Catraca (Mapeando 'Cliente' para 'Nome')
     colunas_catraca = ['Cliente', 'Contrato', 'Data']
     
-    # Verifica a extensão para ler CSV ou Excel
+    # Verifica a extensão para ler CSV ou Excel de forma resiliente
     if hasattr(file_catraca, 'filename') and file_catraca.filename.endswith('.csv'):
-        df_catraca = pd.read_csv(file_catraca, usecols=colunas_catraca)
+        try:
+            df_catraca = pd.read_csv(file_catraca, sep=None, engine='python', encoding='utf-8-sig')
+        except UnicodeDecodeError:
+            file_catraca.seek(0)
+            df_catraca = pd.read_csv(file_catraca, sep=None, engine='python', encoding='iso-8859-1')
+        df_catraca.columns = df_catraca.columns.astype(str).str.strip()
+        df_catraca = df_catraca[colunas_catraca]
     else:
-        df_catraca = pd.read_excel(file_catraca, usecols=colunas_catraca)
+        df_temp_catraca = pd.read_excel(file_catraca)
+        df_temp_catraca.columns = df_temp_catraca.columns.astype(str).str.strip()
+        df_catraca = df_temp_catraca[colunas_catraca]
         
     df_catraca = df_catraca.rename(columns={'Cliente': 'Nome'})
     
@@ -120,7 +150,7 @@ def predict_churn(file_clientes=None, file_catraca=None):
     # Se não enviar os arquivos (ex: rota GET /dados), mantém um Mock de segurança
     if file_clientes is None or file_catraca is None or model is None:
         return [
-            {"nome": "Ana Silva (Simulado)", "probabilidade": 0.8146},
+            {"nome": "Renan Santos (Simulado)", "probabilidade": 0.14},
             {"nome": "Claudio Ferreira (Simulado)", "probabilidade": 0.1523},
             {"nome": "Fernando Costa (Simulado)", "probabilidade": 0.9241}
         ]
