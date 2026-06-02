@@ -6,3 +6,4 @@ scikit-learn
 openpyxl
 #tensorflow
 ai-edge-litert
+gunicorn # server
